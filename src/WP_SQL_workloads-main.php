@@ -170,58 +170,21 @@ if (!function_exists('WP_SQL_workloads_run_workload_with_output')) {
 					$output[] = 'No recipient column found; falling back to admin_email: ' . esc_html($recipient);
 				}
 				$subject = !empty($workload['name']) ? $workload['name'] : 'WP SQL Workload Notification';
-				// If a Contact Form 7 form is configured, try submitting through CF7 so its mail template is used
-				$cf7_id = !empty($workload['cf7_form_id']) ? $workload['cf7_form_id'] : '';
-				if ($cf7_id && class_exists('WPCF7_ContactForm')) {
-					$form = WPCF7_ContactForm::get_instance($cf7_id);
-					if ($form) {
-						$submission_data = $row_arr;
-						if (class_exists('WPCF7_Submission')) {
-							try {
-								// Attempt to create and submit a CF7 submission with posted data
-								$cf7_submission = new WPCF7_Submission($form, ['posted_data' => $submission_data]);
-								if (method_exists($cf7_submission, 'submit')) {
-									$cf7_submission->submit();
-									$output[] = 'CF7 submission triggered for ' . esc_html($recipient);
-									$sent++;
-								} else {
-									$output[] = 'CF7 submission class missing submit() method; falling back to wp_mail.';
-									$sent_ok = wp_mail($recipient, $subject, $template);
-									if ($sent_ok) { $output[] = 'Email sent (wp_mail) to ' . esc_html($recipient); $sent++; }
-								}
-							} catch (Exception $e) {
-								$output[] = 'CF7 submission exception: ' . $e->getMessage();
-								// fallback to wp_mail
-								$sent_ok = wp_mail($recipient, $subject, $template);
-								if ($sent_ok) { $output[] = 'Email sent (wp_mail) to ' . esc_html($recipient); $sent++; }
-							}
-						} else {
-							$output[] = 'WPCF7_Submission class not available; falling back to wp_mail.';
-							$sent_ok = wp_mail($recipient, $subject, $template);
-							if ($sent_ok) { $output[] = 'Email sent (wp_mail) to ' . esc_html($recipient); $sent++; }
-						}
+				if (function_exists('WP_SQL_workloads_queue_email')) {
+					$sent_ok = WP_SQL_workloads_queue_email($recipient, $subject, $template);
+					if ($sent_ok) {
+						$output[] = 'Email queued to ' . esc_html($recipient);
+						$sent++;
 					} else {
-						$output[] = 'CF7 form not found for ID: ' . esc_html($cf7_id) . '; falling back to wp_mail.';
-						$sent_ok = wp_mail($recipient, $subject, $template);
-						if ($sent_ok) { $output[] = 'Email sent (wp_mail) to ' . esc_html($recipient); $sent++; }
+						$output[] = 'Failed to queue email to ' . esc_html($recipient);
 					}
 				} else {
-					if (function_exists('WP_SQL_workloads_queue_email')) {
-						$sent_ok = WP_SQL_workloads_queue_email($recipient, $subject, $template);
-						if ($sent_ok) {
-							$output[] = 'Email queued to ' . esc_html($recipient);
-							$sent++;
-						} else {
-							$output[] = 'Failed to queue email to ' . esc_html($recipient);
-						}
+					$sent_ok = wp_mail($recipient, $subject, $template);
+					if ($sent_ok) {
+						$output[] = 'Email sent (wp_mail) to ' . esc_html($recipient);
+						$sent++;
 					} else {
-						$sent_ok = wp_mail($recipient, $subject, $template);
-						if ($sent_ok) {
-							$output[] = 'Email sent (wp_mail) to ' . esc_html($recipient);
-							$sent++;
-						} else {
-							$output[] = 'wp_mail failed for ' . esc_html($recipient);
-						}
+						$output[] = 'wp_mail failed for ' . esc_html($recipient);
 					}
 				}
 			} else {
