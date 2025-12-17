@@ -37,14 +37,9 @@ function WP_SQL_workloads_activate() {
 // Schedule the event at the selected time every day
 function WP_SQL_workloads_schedule_event() {
 	$clock_time = get_option('WP_SQL_workloads_clock_time', '00:00');
-	if (preg_match('/^(\d{2}):(\d{2})$/', $clock_time, $matches)) {
-		$hour = (int)$matches[1];
-		$minute = (int)$matches[2];
-		$now = current_time('timestamp');
-		$scheduled = mktime($hour, $minute, 0, date('n', $now), date('j', $now), date('Y', $now));
-		if ($scheduled <= $now) {
-			$scheduled = strtotime('+1 day', $scheduled);
-		}
+	// compute next occurrence (uses WP timezone-aware helper)
+	$scheduled = WP_SQL_workloads_next_scheduled_time($clock_time);
+	if ($scheduled) {
 		// Remove any existing event
 		$timestamp = wp_next_scheduled('WP_SQL_workloads_cron_event');
 		if ($timestamp) {
@@ -353,6 +348,17 @@ if (!function_exists('WP_SQL_workloads_run_workload_with_output')) {
 		}
 		$output[] = '<b>Stage 6: Summary</b>';
 		$output[] = 'Total emails sent: ' . $sent;
+
+		// Record last run metadata for UI/debugging
+		$last_run = array(
+			'workload_id' => $workload_id,
+			'timestamp' => current_time('timestamp'),
+			'sent' => $sent,
+			'rows' => is_array($results) ? count($results) : 0,
+			'debug' => $output,
+		);
+		update_option('WP_SQL_workloads_last_run', $last_run);
+
 		return ['debug' => $output];
 	}
 }
@@ -362,6 +368,61 @@ add_action('WP_SQL_workloads_run_workload', function($workload_id) {
 	// Call the runner for scheduled runs (no UI output)
 	WP_SQL_workloads_run_workload_with_output($workload_id);
 }, 10, 1);
+
+// Helper: compute next timestamp for given HH:MM (24h) in WP local time
+if (!function_exists('WP_SQL_workloads_next_scheduled_time')) {
+	function WP_SQL_workloads_next_scheduled_time($hhmm) {
+		try {
+			$tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(date_default_timezone_get());
+			$now = new DateTimeImmutable('now', $tz);
+			if (!preg_match('/^(\d{1,2}):(\d{2})$/', trim($hhmm), $m)) {
+				return $now->getTimestamp();
+			}
+			$h = (int)$m[1];
+			$mm = (int)$m[2];
+			$candidate = $now->setTime($h, $mm, 0);
+			if ($candidate <= $now) {
+				$candidate = $candidate->modify('+1 day');
+			}
+			return $candidate->getTimestamp();
+		} catch (Exception $e) {
+			return current_time('timestamp');
+		}
+	}
+}
+
+// Ensure per-workload scheduled wp-cron events exist (run occasionally)
+if (!function_exists('WP_SQL_workloads_ensure_schedules')) {
+	function WP_SQL_workloads_ensure_schedules() {
+		// run at most once per hour to avoid overhead
+		if (get_transient('WP_SQL_workloads_schedules_checked')) {
+			return;
+		}
+		set_transient('WP_SQL_workloads_schedules_checked', 1, HOUR_IN_SECONDS);
+
+		$workloads = get_option('WP_SQL_workloads_workloads', []);
+		if (!is_array($workloads) || empty($workloads)) return;
+
+		foreach ($workloads as $id => $w) {
+			// don't schedule paused workloads
+			if (!empty($w['paused'])) {
+				// ensure any existing schedule is cleared
+				if (wp_next_scheduled('WP_SQL_workloads_run_workload', [$id])) {
+					wp_clear_scheduled_hook('WP_SQL_workloads_run_workload', [$id]);
+				}
+				continue;
+			}
+			if (!wp_next_scheduled('WP_SQL_workloads_run_workload', [$id])) {
+				// schedule at next occurrence of the workload time, frequency daily
+				$time = isset($w['time']) ? $w['time'] : get_option('WP_SQL_workloads_clock_time', '00:00');
+				$timestamp = WP_SQL_workloads_next_scheduled_time($time);
+				wp_schedule_event($timestamp, 'daily', 'WP_SQL_workloads_run_workload', [$id]);
+			}
+		}
+	}
+}
+
+add_action('init', 'WP_SQL_workloads_ensure_schedules', 20);
 
 /**
  * Queue an email using wp_mail (uses WP Mail SMTP if configured)
@@ -375,6 +436,75 @@ add_action('WP_SQL_workloads_run_workload', function($workload_id) {
 function WP_SQL_workloads_queue_email($to, $subject, $message, $headers = '', $attachments = array()) {
 	// This will use WP Mail SMTP if it is active and configured
 	return wp_mail($to, $subject, $message, $headers, $attachments);
+}
+
+// Dashboard widget: next 3 scheduled workloads and last run
+add_action('wp_dashboard_setup', 'WP_SQL_workloads_add_dashboard_widget');
+function WP_SQL_workloads_add_dashboard_widget() {
+	if (!current_user_can('manage_options')) return;
+	wp_add_dashboard_widget(
+		'wp_sql_workloads_widget',
+		'WP SQL Workloads',
+		'WP_SQL_workloads_dashboard_widget_display'
+	);
+}
+
+function WP_SQL_workloads_dashboard_widget_display() {
+	$workloads = get_option('WP_SQL_workloads_workloads', array());
+	$upcoming = array();
+	if (is_array($workloads)) {
+		foreach ($workloads as $id => $w) {
+			if (!empty($w['paused'])) continue;
+			$next = wp_next_scheduled('WP_SQL_workloads_run_workload', array($id));
+			if ($next) {
+				$upcoming[] = array(
+					'id' => $id,
+					'name' => !empty($w['name']) ? $w['name'] : '(unnamed)',
+					'next' => $next,
+				);
+			}
+		}
+	}
+	usort($upcoming, function($a, $b) { return $a['next'] <=> $b['next']; });
+	$next_three = array_slice($upcoming, 0, 3);
+
+	echo '<div style="padding:6px 0;">';
+	if (!empty($next_three)) {
+		echo '<strong>Next 3 scheduled workloads</strong>';
+		echo '<table style="width:100%;border-collapse:collapse;margin-top:6px;">';
+		echo '<thead><tr><th style="text-align:left;padding:4px">Workload</th><th style="text-align:left;padding:4px">Next Run (local)</th></tr></thead>';
+		echo '<tbody>';
+		foreach ($next_three as $n) {
+			$time = date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $n['next']);
+			$link = admin_url('admin.php?page=WP_SQL_workloads_all_workloads');
+			echo '<tr><td style="padding:4px">' . esc_html($n['name']) . ' <small style="color:#666">(#' . esc_html($n['id']) . ')</small></td><td style="padding:4px">' . esc_html($time) . '</td></tr>';
+		}
+		echo '</tbody></table>';
+	} else {
+		echo '<div>No scheduled workloads found.</div>';
+	}
+
+	// Last run info
+	$last = get_option('WP_SQL_workloads_last_run');
+	echo '<div style="margin-top:10px;border-top:1px solid #eee;padding-top:8px;">';
+	echo '<strong>Most recent run</strong>';
+	if ($last && is_array($last)) {
+		$ts = isset($last['timestamp']) ? $last['timestamp'] : 0;
+		$time = $ts ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $ts) : 'n/a';
+		$wid = isset($last['workload_id']) ? $last['workload_id'] : '(unknown)';
+		$wname = '(unknown)';
+		$all = get_option('WP_SQL_workloads_workloads', array());
+		if (isset($all[$wid]) && !empty($all[$wid]['name'])) $wname = $all[$wid]['name'];
+		echo '<div style="margin-top:6px;">Workload: ' . esc_html($wname) . ' <small style="color:#666">(#' . esc_html($wid) . ')</small></div>';
+		echo '<div>When: ' . esc_html($time) . '</div>';
+		echo '<div>Rows: ' . esc_html(isset($last['rows']) ? $last['rows'] : '0') . ' &nbsp; Sent: ' . esc_html(isset($last['sent']) ? $last['sent'] : '0') . '</div>';
+		if (!empty($last['debug']) && is_array($last['debug'])) {
+			echo '<details style="margin-top:6px;"><summary style="cursor:pointer">Debug (click to expand)</summary><pre style="white-space:pre-wrap;max-height:200px;overflow:auto;padding:6px;background:#fafafa;border:1px solid #eee;">' . esc_html(implode("\n", $last['debug'])) . '</pre></details>';
+		}
+	} else {
+		echo '<div style="color:#666;margin-top:6px;">No runs recorded yet.</div>';
+	}
+	echo '</div></div>';
 }
 
 function WP_SQL_workloads_add_admin_menu() {
@@ -529,8 +659,11 @@ function WP_SQL_workloads_options_page() {
 	       }
        }
 
-       // Unified tab menu
-       WP_SQL_workloads_render_tabs($active_tab);
+	// Show prominent disclaimer about WP-Cron limitations
+	echo '<div class="notice notice-warning is-dismissible" style="margin:12px 0;"><p><strong>TRUE CRON NOT ACTIVE DUE WP-CRON FUNCTIONALITY, IMPLEMENT TRUE CRON ON LIVE.</strong></p></div>';
+
+	// Unified tab menu
+	WP_SQL_workloads_render_tabs($active_tab);
 
        if ($active_tab === 'settings') {
 	       ?>

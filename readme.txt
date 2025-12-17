@@ -1,3 +1,5 @@
+DISCLAIMER: TRUE CRON NOT ACTIVE DUE WP-CRON FUNCTIONALITY, IMPLEMENT TRUE CRON ON LIVE.
+
 === Time Extension ===
 Contributors: Eero Isola
 Tags: expiration, cron, email, admin, custom table, contact-form-7
