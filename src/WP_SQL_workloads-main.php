@@ -170,21 +170,105 @@ if (!function_exists('WP_SQL_workloads_run_workload_with_output')) {
 					$output[] = 'No recipient column found; falling back to admin_email: ' . esc_html($recipient);
 				}
 				$subject = !empty($workload['name']) ? $workload['name'] : 'WP SQL Workload Notification';
-				if (function_exists('WP_SQL_workloads_queue_email')) {
-					$sent_ok = WP_SQL_workloads_queue_email($recipient, $subject, $template);
-					if ($sent_ok) {
-						$output[] = 'Email queued to ' . esc_html($recipient);
-						$sent++;
+				// If a Contact Form 7 form is configured, prefer using its mail template
+				$cf7_id = !empty($workload['cf7_form_id']) ? $workload['cf7_form_id'] : '';
+				$sent_ok = false;
+				if ($cf7_id && class_exists('WPCF7_ContactForm')) {
+					$form = WPCF7_ContactForm::get_instance($cf7_id);
+					if ($form) {
+						$mail_props = $form->prop('mail');
+						// CF7 'recipient' may contain one or more emails or placeholders like [user_email]
+						$cf7_recipient = isset($mail_props['recipient']) ? $mail_props['recipient'] : '';
+						$to_address = $cf7_recipient ? $cf7_recipient : $recipient;
+						$cf7_subject = isset($mail_props['subject']) ? $mail_props['subject'] : $subject;
+						$cf7_body = isset($mail_props['body']) ? $mail_props['body'] : $template;
+
+						// Replace placeholders from SQL row into CF7 template and recipient. Try multiple tag styles.
+						$body_filled = $cf7_body;
+						$subject_filled = $cf7_subject;
+						$to_filled = $to_address;
+						// Build search/replace arrays
+						$search = [];
+						$replace = [];
+						foreach ($row_arr as $col => $val) {
+							$search[] = '{' . strtoupper($col) . '}'; $replace[] = $val;
+							$search[] = '{' . strtolower($col) . '}'; $replace[] = $val;
+							$search[] = '[' . $col . ']'; $replace[] = $val;
+							$search[] = '[' . $col . '*]'; $replace[] = $val;
+							$search[] = '[' . strtolower($col) . ']'; $replace[] = $val;
+							$search[] = '[' . strtoupper($col) . ']'; $replace[] = $val;
+						}
+						// Common placeholders
+						if (isset($row_arr['ID'])) { $search[] = '{ID}'; $replace[] = $row_arr['ID']; $search[] = '{id}'; $replace[] = $row_arr['ID']; }
+
+						if (!empty($search)) {
+							$body_filled = str_replace($search, $replace, $body_filled);
+							$subject_filled = str_replace($search, $replace, $subject_filled);
+							$to_filled = str_replace($search, $replace, $to_filled);
+						}
+
+						// Validate recipient(s) — allow comma-separated list, pick valid emails
+						$valid_recipients = [];
+						foreach (preg_split('/[,;\s]+/', $to_filled) as $candidate) {
+							$candidate = trim($candidate);
+							if (is_email($candidate)) {
+								$valid_recipients[] = $candidate;
+							}
+						}
+						if (!empty($valid_recipients)) {
+							$to_address = implode(',', $valid_recipients);
+						} else {
+							// fallback to detected recipient from row (email column) or admin
+							if (!empty($recipient) && is_email($recipient)) {
+								$to_address = $recipient;
+								$output[] = 'CF7 recipient placeholders did not resolve; using recipient column ' . esc_html($recipient);
+							} else {
+								$to_address = get_option('admin_email');
+								$output[] = 'CF7 recipient placeholders did not resolve; falling back to admin_email: ' . esc_html($to_address);
+							}
+						}
+
+						// Also replace simple {ID} and {EXPIRY_DATE} placeholders
+						if (isset($row->ID)) {
+							$body_filled = str_replace(['{ID}', '{id}'], $row->ID, $body_filled);
+							$subject_filled = str_replace(['{ID}', '{id}'], $row->ID, $subject_filled);
+						}
+
+						// Headers: try to use CF7 sender if present
+						$headers = [];
+						if (!empty($mail_props['sender'])) {
+							$headers[] = 'From: ' . $mail_props['sender'];
+						}
+
+						// Send using wp_mail with CF7-derived templates
+						$sent_ok = wp_mail($to_address, $subject_filled, $body_filled, $headers);
+						if ($sent_ok) {
+							$output[] = 'Email sent using CF7 template to ' . esc_html($to_address);
+							$sent++;
+						} else {
+							$output[] = 'Failed to send email using CF7 template to ' . esc_html($to_address);
+						}
 					} else {
-						$output[] = 'Failed to queue email to ' . esc_html($recipient);
+						$output[] = 'CF7 form not found for ID: ' . esc_html($cf7_id) . '; falling back to wp_mail.';
 					}
-				} else {
-					$sent_ok = wp_mail($recipient, $subject, $template);
-					if ($sent_ok) {
-						$output[] = 'Email sent (wp_mail) to ' . esc_html($recipient);
-						$sent++;
+				}
+				if (!$sent_ok) {
+					if (function_exists('WP_SQL_workloads_queue_email')) {
+						$sent_ok = WP_SQL_workloads_queue_email($recipient, $subject, $template);
+						if ($sent_ok) {
+							$output[] = 'Email queued to ' . esc_html($recipient);
+							$sent++;
+						} else {
+							$output[] = 'Failed to queue email to ' . esc_html($recipient);
+						}
 					} else {
-						$output[] = 'wp_mail failed for ' . esc_html($recipient);
+						$sent_ok = wp_mail($recipient, $subject, $template);
+						if ($sent_ok) {
+							$output[] = 'Email sent (wp_mail) to ' . esc_html($recipient);
+							$sent++;
+						} else {
+							$output[] = 'wp_mail failed for ' . esc_html($recipient);
+						}
 					}
 				}
 			} else {
