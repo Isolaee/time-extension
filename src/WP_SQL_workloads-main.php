@@ -183,28 +183,104 @@ if (!function_exists('WP_SQL_workloads_run_workload_with_output')) {
 						$cf7_subject = isset($mail_props['subject']) ? $mail_props['subject'] : $subject;
 						$cf7_body = isset($mail_props['body']) ? $mail_props['body'] : $template;
 
-						// Replace placeholders from SQL row into CF7 template and recipient. Try multiple tag styles.
+						// Replace CF7 tags like [field] or {FIELD} by matching SQL row columns.
 						$body_filled = $cf7_body;
 						$subject_filled = $cf7_subject;
 						$to_filled = $to_address;
-						// Build search/replace arrays
-						$search = [];
-						$replace = [];
-						foreach ($row_arr as $col => $val) {
-							$search[] = '{' . strtoupper($col) . '}'; $replace[] = $val;
-							$search[] = '{' . strtolower($col) . '}'; $replace[] = $val;
-							$search[] = '[' . $col . ']'; $replace[] = $val;
-							$search[] = '[' . $col . '*]'; $replace[] = $val;
-							$search[] = '[' . strtolower($col) . ']'; $replace[] = $val;
-							$search[] = '[' . strtoupper($col) . ']'; $replace[] = $val;
-						}
-						// Common placeholders
-						if (isset($row_arr['ID'])) { $search[] = '{ID}'; $replace[] = $row_arr['ID']; $search[] = '{id}'; $replace[] = $row_arr['ID']; }
 
-						if (!empty($search)) {
-							$body_filled = str_replace($search, $replace, $body_filled);
-							$subject_filled = str_replace($search, $replace, $subject_filled);
-							$to_filled = str_replace($search, $replace, $to_filled);
+						$normalize = function($s) {
+							$s = (string) $s;
+							$s = trim($s);
+							$s = strtolower($s);
+							// replace non-alphanumeric with underscore
+							$s = preg_replace('/[^a-z0-9]+/', '_', $s);
+							$s = trim($s, '_');
+							return $s;
+						};
+
+						$find_value_for_tag = function($tag) use ($row_arr, $normalize) {
+							$t = $normalize($tag);
+							// Try direct matches
+							foreach ($row_arr as $col => $val) {
+								if ($normalize($col) === $t) return $val;
+							}
+							// Try stripping common prefixes from tag (e.g., 'your_', 'your')
+							$stripped = preg_replace('/^your_?/', '', $t);
+							if ($stripped !== $t) {
+								foreach ($row_arr as $col => $val) {
+									if ($normalize($col) === $stripped) return $val;
+								}
+							}
+							// Try matching tag to column suffixes (e.g., 'name' -> 'user_name' or 'user_login')
+							foreach ($row_arr as $col => $val) {
+								$norm_col = $normalize($col);
+								if (str_ends_with($norm_col, '_' . $t) || str_ends_with($norm_col, $t)) return $val;
+							}
+							return null;
+						};
+
+						// Find all [tags] in body/subject/recipient (bracket style)
+						if (preg_match_all('/(\[([^\]\s\*]+)\*?\])/', $body_filled, $m, PREG_SET_ORDER)) {
+							foreach ($m as $mt) {
+								$full = $mt[1];
+								$tag = $mt[2];
+								$val = $find_value_for_tag($tag);
+								if (!is_null($val)) {
+									$body_filled = str_replace($full, $val, $body_filled);
+								}
+							}
+						}
+						if (preg_match_all('/(\[([^\]\s\*]+)\*?\])/', $subject_filled, $m, PREG_SET_ORDER)) {
+							foreach ($m as $mt) {
+								$full = $mt[1];
+								$tag = $mt[2];
+								$val = $find_value_for_tag($tag);
+								if (!is_null($val)) {
+									$subject_filled = str_replace($full, $val, $subject_filled);
+								}
+							}
+						}
+						if (preg_match_all('/(\[([^\]\s\*]+)\*?\])/', $to_filled, $m, PREG_SET_ORDER)) {
+							foreach ($m as $mt) {
+								$full = $mt[1];
+								$tag = $mt[2];
+								$val = $find_value_for_tag($tag);
+								if (!is_null($val)) {
+									$to_filled = str_replace($full, $val, $to_filled);
+								}
+							}
+						}
+
+						// Find all {tags} in body/subject/recipient (brace style)
+						if (preg_match_all('/\{([^\}]+)\}/', $body_filled, $m, PREG_SET_ORDER)) {
+							foreach ($m as $mt) {
+								$tag = $mt[1];
+								$full = '{' . $tag . '}';
+								$val = $find_value_for_tag($tag);
+								if (!is_null($val)) {
+									$body_filled = str_replace($full, $val, $body_filled);
+								}
+							}
+						}
+						if (preg_match_all('/\{([^\}]+)\}/', $subject_filled, $m, PREG_SET_ORDER)) {
+							foreach ($m as $mt) {
+								$tag = $mt[1];
+								$full = '{' . $tag . '}';
+								$val = $find_value_for_tag($tag);
+								if (!is_null($val)) {
+									$subject_filled = str_replace($full, $val, $subject_filled);
+								}
+							}
+						}
+						if (preg_match_all('/\{([^\}]+)\}/', $to_filled, $m, PREG_SET_ORDER)) {
+							foreach ($m as $mt) {
+								$tag = $mt[1];
+								$full = '{' . $tag . '}';
+								$val = $find_value_for_tag($tag);
+								if (!is_null($val)) {
+									$to_filled = str_replace($full, $val, $to_filled);
+								}
+							}
 						}
 
 						// Validate recipient(s) — allow comma-separated list, pick valid emails
