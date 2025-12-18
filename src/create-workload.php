@@ -85,7 +85,7 @@ if (!function_exists('WP_SQL_workloads_render_tabs')) {
 		.timeext-tab.active { color: #d35400; border-bottom: 2px solid #d35400; font-weight: 600; }
 		</style>';
 		echo '<nav class="timeext-tabs">';
-		echo '<a href="?page=WP_SQL_workloads&tab=test" class="timeext-tab' . ($active_tab === 'test' ? ' active' : '') . '">Test</a>';
+		echo '<a href="?page=WP_SQL_workloads&tab=info" class="timeext-tab' . ($active_tab === 'info' ? ' active' : '') . '">Test</a>';
 		echo '<a href="?page=WP_SQL_workloads_add_workload" class="timeext-tab' . ($active_tab === 'add_workload' ? ' active' : '') . '">Add Workload</a>';
 		echo '<a href="?page=WP_SQL_workloads_all_workloads" class="timeext-tab' . ($active_tab === 'all_workloads' ? ' active' : '') . '">All Workloads</a>';
 		echo '</nav>';

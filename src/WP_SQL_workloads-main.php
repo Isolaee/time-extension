@@ -21,7 +21,7 @@ if (!function_exists('WP_SQL_workloads_render_tabs')) {
 		.timeext-tab.active { color: #d35400; border-bottom: 2px solid #d35400; font-weight: 600; }
 		</style>';
 		echo '<nav class="timeext-tabs">';
-		echo '<a href="?page=WP_SQL_workloads&tab=test" class="timeext-tab' . ($active_tab === 'test' ? ' active' : '') . '">Test</a>';
+		echo '<a href="?page=WP_SQL_workloads&tab=info" class="timeext-tab' . ($active_tab === 'info' ? ' active' : '') . '">Test</a>';
 		echo '<a href="?page=WP_SQL_workloads_add_workload" class="timeext-tab' . ($active_tab === 'add_workload' ? ' active' : '') . '">Add Workload</a>';
 		echo '<a href="?page=WP_SQL_workloads_all_workloads" class="timeext-tab' . ($active_tab === 'all_workloads' ? ' active' : '') . '">All Workloads</a>';
 		echo '</nav>';
@@ -154,7 +154,7 @@ function WP_SQL_workloads_add_admin_menu() {
 	       'WP SQL Workloads', // Menu title
 	       'manage_options', // Capability
 	       'WP_SQL_workloads', // Menu slug
-	       'WP_SQL_workloads_options_page', // Function
+	       'WP_SQL_workloads_info_page', // Function
 	       'dashicons-clock', // Icon
 	       25 // Position
        );
@@ -212,57 +212,12 @@ function WP_SQL_workloads_add_workload_page() {
 
 
 /**
- * Top-level plugin options / test page. Handles form submissions for:
- * - selecting table name
- * - running SQL test queries (SELECT only)
- * - sending a single test email
+ * Top-level plugin info.
  *
  * Renders the tab navigation via `WP_SQL_workloads_render_tabs()` and outputs
  * messages/results inline.
  */
-function WP_SQL_workloads_options_page() {
-	global $wpdb;
-       // Use posted value if available, otherwise use option
-	   if (isset($_POST['WP_SQL_workloads_table_name'])) {
-		   $table_name = esc_sql(sanitize_text_field($_POST['WP_SQL_workloads_table_name']));
-	   } else {
-		   $table_name = esc_sql(get_option('WP_SQL_workloads_table_name', 'wp_posts'));
-	   }
-	$active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'test';
-       $show_head = isset($_POST['show_head']);
-       $show_test = isset($_POST['show_test']);
-       $send_test = isset($_POST['send_test']);
-       $test_email = isset($_POST['test_email']) ? sanitize_email($_POST['test_email']) : '';
-
-	   $test_result = '';
-	   if ($send_test && $test_email) {
-		   $sent = WP_SQL_workloads_queue_email($test_email, 'Test Email from WP_SQL_workloads', 'This is a test email from the WP_SQL_workloads plugin.');
-		   $test_result = $sent ? '<div style="color:green;">Test email sent to ' . esc_html($test_email) . '.</div>' : '<div style="color:red;">Failed to send test email.</div>';
-       }
-
-       // SQL test logic
-       $show_sql = isset($_POST['show_sql']);
-       $run_sql = isset($_POST['run_sql']);
-       $sql_query = isset($_POST['sql_query']) ? trim(stripslashes($_POST['sql_query'])) : '';
-       $sql_result = '';
-       if ($run_sql && $sql_query) {
-	       global $wpdb;
-	       // Only allow SELECT queries for safety
-	       if (preg_match('/^\s*SELECT/i', $sql_query)) {
-		       $results = $wpdb->get_results($sql_query, ARRAY_A);
-		       if ($results) {
-			       $sql_result .= '</tbody></table>';
-		       } else {
-			       $sql_result .= '<div style="color:red;">No results found.</div>';
-		       }
-	       } else {
-		       $sql_result .= '<div style="color:red;">Only SELECT queries are allowed for testing.</div>';
-	       }
-       }
-
+function WP_SQL_workloads_info_page() {
 	// Show prominent disclaimer about WP-Cron limitations
 	echo '<div class="notice notice-warning is-dismissible" style="margin:12px 0;"><p><strong> To activate true cron, use outside trigger, like cPanel CronJob (curl -s https://growthrocket.online/wp-cron.php?doing_wp_cron >/dev/null 2>&1)</strong></p></div>';
-TRUE
-	// Unified tab menu
-	WP_SQL_workloads_render_tabs($active_tab);
 }
