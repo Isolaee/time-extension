@@ -121,6 +121,8 @@ if (!function_exists('WP_SQL_workloads_add_workload_page')) {
 
 		WP_SQL_workloads_render_tabs($is_edit ? 'add_workload' : 'add_workload');
 
+		echo '<div class="wrap" style="margin-top:12px;">';
+		echo '<h1>WP SQL Workloads</h1>';
 		?>
 		<h2><?php echo $is_edit ? 'Edit Workload' : 'Add Workload'; ?></h2>
 
@@ -190,5 +192,6 @@ if (!function_exists('WP_SQL_workloads_add_workload_page')) {
 				echo '<div class="notice notice-success"><p>Workload updated.</p></div>';
 			}
 		}
+		echo '</div>';
 	}
 }

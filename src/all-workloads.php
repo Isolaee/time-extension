@@ -11,6 +11,8 @@ require_once dirname(__FILE__) . '/helpers.php';
 if (!function_exists('WP_SQL_workloads_all_workloads_page')) {
     function WP_SQL_workloads_all_workloads_page() {
         WP_SQL_workloads_render_tabs('all_workloads');
+        echo '<div class="wrap" style="margin-top:12px;">';
+        echo '<h1>WP SQL Workloads</h1>'; 
 
         // Handle actions: delete, pause, resume, testnow
         if (isset($_GET['workload_action'], $_GET['workload_id'])) {
@@ -116,7 +118,7 @@ if (!function_exists('WP_SQL_workloads_all_workloads_page')) {
             }
         }
 
-        echo '<h2>All Workloads</h2>';
+        echo '<h2 style="margin-top:8px">All Workloads</h2>';
         $workloads = get_option('WP_SQL_workloads_workloads', []);
         if (empty($workloads)) {
             echo '<p>No workloads found.</p>';
@@ -151,5 +153,6 @@ if (!function_exists('WP_SQL_workloads_all_workloads_page')) {
             }
             echo '</tbody></table>';
         }
+        echo '</div>';
     }
 }
