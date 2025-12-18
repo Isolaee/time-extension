@@ -1,17 +1,19 @@
 <?php
 /*
 Plugin Name: WP SQL Workloads
-Description: Allows configuration of the database table to follow.
+Description: Database workload tester and notifier (trimmed: settings removed).
 Version: 1.0
 Author: Eero Isola
 */
 
-// Add settings menu
-add_action('admin_menu', 'WP_SQL_workloads_add_admin_menu');
-add_action('admin_init', 'WP_SQL_workloads_settings_init');
-
+// render tab navigation
 if (!function_exists('WP_SQL_workloads_render_tabs')) {
 	// In case this file is loaded directly, define the function (should always exist)
+	/**
+	 * Render the admin page tab navigation.
+	 *
+	 * @param string $active_tab Currently active tab key ('test', 'add_workload', 'all_workloads').
+	 */
 	function WP_SQL_workloads_render_tabs($active_tab) {
 		echo '<style>
 		.timeext-tabs { border-bottom: 1px solid #ddd; margin-bottom: 20px; }
@@ -19,7 +21,6 @@ if (!function_exists('WP_SQL_workloads_render_tabs')) {
 		.timeext-tab.active { color: #d35400; border-bottom: 2px solid #d35400; font-weight: 600; }
 		</style>';
 		echo '<nav class="timeext-tabs">';
-		echo '<a href="?page=WP_SQL_workloads&tab=settings" class="timeext-tab' . ($active_tab === 'settings' ? ' active' : '') . '">Settings</a>';
 		echo '<a href="?page=WP_SQL_workloads&tab=test" class="timeext-tab' . ($active_tab === 'test' ? ' active' : '') . '">Test</a>';
 		echo '<a href="?page=WP_SQL_workloads_add_workload" class="timeext-tab' . ($active_tab === 'add_workload' ? ' active' : '') . '">Add Workload</a>';
 		echo '<a href="?page=WP_SQL_workloads_all_workloads" class="timeext-tab' . ($active_tab === 'all_workloads' ? ' active' : '') . '">All Workloads</a>';
@@ -27,373 +28,19 @@ if (!function_exists('WP_SQL_workloads_render_tabs')) {
 	}
 }
 
-// WP-Cron logic
-register_activation_hook(__FILE__, 'WP_SQL_workloads_activate');
-register_deactivation_hook(__FILE__, 'WP_SQL_workloads_deactivate');
 
-function WP_SQL_workloads_activate() {
-	WP_SQL_workloads_schedule_event();
-}
-// Schedule the event at the selected time every day
-function WP_SQL_workloads_schedule_event() {
-	$clock_time = get_option('WP_SQL_workloads_clock_time', '00:00');
-	// compute next occurrence (uses WP timezone-aware helper)
-	$scheduled = WP_SQL_workloads_next_scheduled_time($clock_time);
-	if ($scheduled) {
-		// Remove any existing event
-		$timestamp = wp_next_scheduled('WP_SQL_workloads_cron_event');
-		if ($timestamp) {
-			wp_unschedule_event($timestamp, 'WP_SQL_workloads_cron_event');
-		}
-		wp_schedule_event($scheduled, 'daily', 'WP_SQL_workloads_cron_event');
-	}
-}
-
-// Reschedule if the time changes
-add_action('update_option_WP_SQL_workloads_clock_time', 'WP_SQL_workloads_schedule_event', 10, 0);
-
-function WP_SQL_workloads_deactivate() {
-	$timestamp = wp_next_scheduled('WP_SQL_workloads_cron_event');
-	if ($timestamp) {
-		wp_unschedule_event($timestamp, 'WP_SQL_workloads_cron_event');
-	}
-}
-
-add_action('WP_SQL_workloads_cron_event', 'WP_SQL_workloads_cron_callback');
-
-function WP_SQL_workloads_cron_callback() {
-	global $wpdb;
-	$table = esc_sql(get_option('WP_SQL_workloads_table_name', 'wp_posts'));
-	$email_template = get_option('WP_SQL_workloads_email_template', 'Your item with ID {ID} will expire on {EXPIRY_DATE}.');
-	$admin_email = get_option('admin_email');
-
-	// Try to find a column named 'expiration' or 'expiry_date' (date or datetime)
-	$columns = $wpdb->get_results("SHOW COLUMNS FROM `$table`");
-	$expiry_col = null;
-	foreach ($columns as $col) {
-		if (in_array(strtolower($col->Field), ['expiration', 'expiry_date', 'expires_at'])) {
-			$expiry_col = $col->Field;
-			break;
-		}
-	}
-	if (!$expiry_col) {
-		error_log('WP_SQL_workloads: No expiration column found in table ' . $table);
-		return;
-	}
-
-	// Find rows expiring in exactly X days (trigger condition)
-	$trigger_days = intval(get_option('WP_SQL_workloads_trigger_days', 7));
-	$target_date = date('Y-m-d', strtotime('+' . $trigger_days . ' days'));
-	$results = $wpdb->get_results($wpdb->prepare(
-		"SELECT * FROM `$table` WHERE DATE($expiry_col) = %s",
-		$target_date
-	));
-
-	foreach ($results as $row) {
-		$id = isset($row->ID) ? $row->ID : (isset($row->id) ? $row->id : '');
-		$expiry = isset($row->$expiry_col) ? $row->$expiry_col : '';
-		$message = str_replace(['{ID}', '{EXPIRY_DATE}'], [$id, $expiry], $email_template);
-		// You may want to use a different recipient field here
-		WP_SQL_workloads_queue_email($admin_email, 'Expiration Notice', $message);
-	}
-}
-
-// Provide workload runner with debug output so 'Test Now' works from All Workloads page
-if (!function_exists('WP_SQL_workloads_run_workload_with_output')) {
-	function WP_SQL_workloads_run_workload_with_output($workload_id) {
-		$output = [];
-		$output[] = '<b>Stage 1: Fetch workloads</b>';
-		$workloads = get_option('WP_SQL_workloads_workloads', []);
-		$output[] = 'All workloads: ' . esc_html(json_encode(array_keys($workloads)));
-		if (!isset($workloads[$workload_id])) {
-			$output[] = 'Workload not found: ' . esc_html($workload_id);
-			return ['error' => 'Workload not found.', 'debug' => $output];
-		}
-		$workload = $workloads[$workload_id];
-		$output[] = '<b>Stage 2: Workload details</b>';
-		foreach ($workload as $k => $v) {
-			$output[] = esc_html($k) . ': ' . esc_html($v);
-		}
-		// Backward compatibility: support both 'criteria' and 'sql_query' keys
-		$sql_query = isset($workload['sql_query']) ? $workload['sql_query'] : (isset($workload['criteria']) ? $workload['criteria'] : '');
-		$sql_query = trim($sql_query);
-		$output[] = '<b>Stage 3: Validate SQL Query</b>';
-		$output[] = 'SQL Query: ' . esc_html($sql_query);
-		if (stripos($sql_query, 'select') !== 0) {
-			$output[] = 'SQL Query is not a SELECT query.';
-			return ['error' => 'Only SELECT queries are allowed.', 'debug' => $output];
-		}
-		global $wpdb;
-		$output[] = '<b>Stage 4: Execute query</b>';
-		// Ensure query is safe for preview
-		$preview_query = preg_replace('/;\s*$/', '', $sql_query);
-		if (!preg_match('/\blimit\b\s+\d+/i', $preview_query)) {
-			$preview_query .= ' LIMIT 1000';
-		}
-		$results = $wpdb->get_results($preview_query);
-		$output[] = 'Rows found: ' . (is_array($results) ? count($results) : 0);
-		if (!empty($wpdb->last_error)) {
-			$output[] = '<b>SQL Error:</b> ' . $wpdb->last_error;
-			return ['error' => 'SQL execution error', 'debug' => $output];
-		}
-		$sent = 0;
-		foreach ($results as $i => $row) {
-			$row_info = [];
-			foreach ($row as $col => $val) {
-				$row_info[] = esc_html($col) . '=' . esc_html($val);
-			}
-			$output[] = 'Row #' . ($i+1) . ': ' . implode(', ', $row_info);
-
-			// For now, support action 'send_email' by using wp_mail wrapper
-			if (!empty($workload['action']) && $workload['action'] === 'send_email') {
-				$template = !empty($workload['message']) ? $workload['message'] : 'Notification for record {ID}.';
-				$row_arr = (array) $row;
-				foreach ($row_arr as $col => $val) {
-					$template = str_replace('{' . strtoupper($col) . '}', $val, $template);
-					$template = str_replace('{' . strtolower($col) . '}', $val, $template);
-				}
-				$recipient = '';
-				$email_keys = ['user_email', 'email', 'email_address', 'contact_email', 'to'];
-				foreach ($email_keys as $k) {
-					if (isset($row_arr[$k]) && !empty($row_arr[$k])) {
-						$recipient = $row_arr[$k];
-						break;
-					}
-				}
-				if (empty($recipient)) {
-					$recipient = get_option('admin_email');
-					$output[] = 'No recipient column found; falling back to admin_email: ' . esc_html($recipient);
-				}
-				$subject = !empty($workload['name']) ? $workload['name'] : 'WP SQL Workload Notification';
-				// If a Contact Form 7 form is configured, prefer using its mail template
-				$cf7_id = !empty($workload['cf7_form_id']) ? $workload['cf7_form_id'] : '';
-				$sent_ok = false;
-				if ($cf7_id && class_exists('WPCF7_ContactForm')) {
-					$form = WPCF7_ContactForm::get_instance($cf7_id);
-					if ($form) {
-						$mail_props = $form->prop('mail');
-						// CF7 'recipient' may contain one or more emails or placeholders like [user_email]
-						$cf7_recipient = isset($mail_props['recipient']) ? $mail_props['recipient'] : '';
-						$to_address = $cf7_recipient ? $cf7_recipient : $recipient;
-						$cf7_subject = isset($mail_props['subject']) ? $mail_props['subject'] : $subject;
-						$cf7_body = isset($mail_props['body']) ? $mail_props['body'] : $template;
-
-						// Replace CF7 tags like [field] or {FIELD} by matching SQL row columns.
-						$body_filled = $cf7_body;
-						$subject_filled = $cf7_subject;
-						$to_filled = $to_address;
-
-						$normalize = function($s) {
-							$s = (string) $s;
-							$s = trim($s);
-							$s = strtolower($s);
-							// replace non-alphanumeric with underscore
-							$s = preg_replace('/[^a-z0-9]+/', '_', $s);
-							$s = trim($s, '_');
-							return $s;
-						};
-
-						$find_value_for_tag = function($tag) use ($row_arr, $normalize) {
-							$t = $normalize($tag);
-							// Try direct matches
-							foreach ($row_arr as $col => $val) {
-								if ($normalize($col) === $t) return $val;
-							}
-							// Try stripping common prefixes from tag (e.g., 'your_', 'your')
-							$stripped = preg_replace('/^your_?/', '', $t);
-							if ($stripped !== $t) {
-								foreach ($row_arr as $col => $val) {
-									if ($normalize($col) === $stripped) return $val;
-								}
-							}
-							// Try matching tag to column suffixes (e.g., 'name' -> 'user_name' or 'user_login')
-							foreach ($row_arr as $col => $val) {
-								$norm_col = $normalize($col);
-								if (str_ends_with($norm_col, '_' . $t) || str_ends_with($norm_col, $t)) return $val;
-							}
-							return null;
-						};
-
-						// Find all [tags] in body/subject/recipient (bracket style)
-						if (preg_match_all('/(\[([^\]\s\*]+)\*?\])/', $body_filled, $m, PREG_SET_ORDER)) {
-							foreach ($m as $mt) {
-								$full = $mt[1];
-								$tag = $mt[2];
-								$val = $find_value_for_tag($tag);
-								if (!is_null($val)) {
-									$body_filled = str_replace($full, $val, $body_filled);
-								}
-							}
-						}
-						if (preg_match_all('/(\[([^\]\s\*]+)\*?\])/', $subject_filled, $m, PREG_SET_ORDER)) {
-							foreach ($m as $mt) {
-								$full = $mt[1];
-								$tag = $mt[2];
-								$val = $find_value_for_tag($tag);
-								if (!is_null($val)) {
-									$subject_filled = str_replace($full, $val, $subject_filled);
-								}
-							}
-						}
-						if (preg_match_all('/(\[([^\]\s\*]+)\*?\])/', $to_filled, $m, PREG_SET_ORDER)) {
-							foreach ($m as $mt) {
-								$full = $mt[1];
-								$tag = $mt[2];
-								$val = $find_value_for_tag($tag);
-								if (!is_null($val)) {
-									$to_filled = str_replace($full, $val, $to_filled);
-								}
-							}
-						}
-
-						// Find all {tags} in body/subject/recipient (brace style)
-						if (preg_match_all('/\{([^\}]+)\}/', $body_filled, $m, PREG_SET_ORDER)) {
-							foreach ($m as $mt) {
-								$tag = $mt[1];
-								$full = '{' . $tag . '}';
-								$val = $find_value_for_tag($tag);
-								if (!is_null($val)) {
-									$body_filled = str_replace($full, $val, $body_filled);
-								}
-							}
-						}
-						if (preg_match_all('/\{([^\}]+)\}/', $subject_filled, $m, PREG_SET_ORDER)) {
-							foreach ($m as $mt) {
-								$tag = $mt[1];
-								$full = '{' . $tag . '}';
-								$val = $find_value_for_tag($tag);
-								if (!is_null($val)) {
-									$subject_filled = str_replace($full, $val, $subject_filled);
-								}
-							}
-						}
-						if (preg_match_all('/\{([^\}]+)\}/', $to_filled, $m, PREG_SET_ORDER)) {
-							foreach ($m as $mt) {
-								$tag = $mt[1];
-								$full = '{' . $tag . '}';
-								$val = $find_value_for_tag($tag);
-								if (!is_null($val)) {
-									$to_filled = str_replace($full, $val, $to_filled);
-								}
-							}
-						}
-
-						// Validate recipient(s) — allow comma-separated list, pick valid emails
-						$valid_recipients = [];
-						foreach (preg_split('/[,;\s]+/', $to_filled) as $candidate) {
-							$candidate = trim($candidate);
-							if (is_email($candidate)) {
-								$valid_recipients[] = $candidate;
-							}
-						}
-						if (!empty($valid_recipients)) {
-							$to_address = implode(',', $valid_recipients);
-						} else {
-							// fallback to detected recipient from row (email column) or admin
-							if (!empty($recipient) && is_email($recipient)) {
-								$to_address = $recipient;
-								$output[] = 'CF7 recipient placeholders did not resolve; using recipient column ' . esc_html($recipient);
-							} else {
-								$to_address = get_option('admin_email');
-								$output[] = 'CF7 recipient placeholders did not resolve; falling back to admin_email: ' . esc_html($to_address);
-							}
-						}
-
-						// Also replace simple {ID} and {EXPIRY_DATE} placeholders
-						if (isset($row->ID)) {
-							$body_filled = str_replace(['{ID}', '{id}'], $row->ID, $body_filled);
-							$subject_filled = str_replace(['{ID}', '{id}'], $row->ID, $subject_filled);
-						}
-
-						// Headers: try to use CF7 sender if present
-						$headers = [];
-						if (!empty($mail_props['sender'])) {
-							$headers[] = 'From: ' . $mail_props['sender'];
-						}
-
-						// Send using wp_mail with CF7-derived templates
-						$sent_ok = wp_mail($to_address, $subject_filled, $body_filled, $headers);
-						if ($sent_ok) {
-							$output[] = 'Email sent using CF7 template to ' . esc_html($to_address);
-							$sent++;
-						} else {
-							$output[] = 'Failed to send email using CF7 template to ' . esc_html($to_address);
-						}
-					} else {
-						$output[] = 'CF7 form not found for ID: ' . esc_html($cf7_id) . '; falling back to wp_mail.';
-					}
-				}
-				if (!$sent_ok) {
-					if (function_exists('WP_SQL_workloads_queue_email')) {
-						$sent_ok = WP_SQL_workloads_queue_email($recipient, $subject, $template);
-						if ($sent_ok) {
-							$output[] = 'Email queued to ' . esc_html($recipient);
-							$sent++;
-						} else {
-							$output[] = 'Failed to queue email to ' . esc_html($recipient);
-						}
-					} else {
-						$sent_ok = wp_mail($recipient, $subject, $template);
-						if ($sent_ok) {
-							$output[] = 'Email sent (wp_mail) to ' . esc_html($recipient);
-							$sent++;
-						} else {
-							$output[] = 'wp_mail failed for ' . esc_html($recipient);
-						}
-					}
-				}
-			} else {
-				$output[] = 'Skipped row #' . ($i+1) . ' (unsupported action)';
-			}
-		}
-		$output[] = '<b>Stage 6: Summary</b>';
-		$output[] = 'Total emails sent: ' . $sent;
-
-		// Record last run metadata for UI/debugging
-		$last_run = array(
-			'workload_id' => $workload_id,
-			'timestamp' => current_time('timestamp'),
-			'sent' => $sent,
-			'rows' => is_array($results) ? count($results) : 0,
-			'debug' => $output,
-		);
-		update_option('WP_SQL_workloads_last_run', $last_run);
-
-		return ['debug' => $output];
-	}
-}
-
-// Ensure scheduled/workload action exists
-add_action('WP_SQL_workloads_run_workload', function($workload_id) {
-	// Call the runner for scheduled runs (no UI output)
-	WP_SQL_workloads_run_workload_with_output($workload_id);
-}, 10, 1);
-
-// Helper: compute next timestamp for given HH:MM (24h) in WP local time
-if (!function_exists('WP_SQL_workloads_next_scheduled_time')) {
-	function WP_SQL_workloads_next_scheduled_time($hhmm) {
-		try {
-			$tz = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone(date_default_timezone_get());
-			$now = new DateTimeImmutable('now', $tz);
-			if (!preg_match('/^(\d{1,2}):(\d{2})$/', trim($hhmm), $m)) {
-				return $now->getTimestamp();
-			}
-			$h = (int)$m[1];
-			$mm = (int)$m[2];
-			$candidate = $now->setTime($h, $mm, 0);
-			if ($candidate <= $now) {
-				$candidate = $candidate->modify('+1 day');
-			}
-			return $candidate->getTimestamp();
-		} catch (Exception $e) {
-			return current_time('timestamp');
-		}
-	}
-}
+// Load shared helpers (next-scheduled helper, runner, queue_email)
+require_once dirname(__FILE__) . '/helpers.php';
+// Ensure the runner is registered on the WP hook so both cron and admin can invoke it.
+add_action('WP_SQL_workloads_run_workload', 'WP_SQL_workloads_run_workload_with_output', 10, 1);
 
 // Ensure per-workload scheduled wp-cron events exist (run occasionally)
-if (!function_exists('WP_SQL_workloads_ensure_schedules')) {
-	function WP_SQL_workloads_ensure_schedules() {
+    if (!function_exists('WP_SQL_workloads_ensure_schedules')) {
+    	/**
+    	 * Ensure per-workload wp-cron events exist (idempotent).
+    	 * Runs at most once per hour via transient to reduce overhead.
+    	 */
+    	function WP_SQL_workloads_ensure_schedules() {
 		// run at most once per hour to avoid overhead
 		if (get_transient('WP_SQL_workloads_schedules_checked')) {
 			return;
@@ -413,7 +60,6 @@ if (!function_exists('WP_SQL_workloads_ensure_schedules')) {
 				continue;
 			}
 			if (!wp_next_scheduled('WP_SQL_workloads_run_workload', [$id])) {
-				// schedule at next occurrence of the workload time, frequency daily
 				$time = isset($w['time']) ? $w['time'] : get_option('WP_SQL_workloads_clock_time', '00:00');
 				$timestamp = WP_SQL_workloads_next_scheduled_time($time);
 				wp_schedule_event($timestamp, 'daily', 'WP_SQL_workloads_run_workload', [$id]);
@@ -422,24 +68,11 @@ if (!function_exists('WP_SQL_workloads_ensure_schedules')) {
 	}
 }
 
-add_action('init', 'WP_SQL_workloads_ensure_schedules', 20);
-
-/**
- * Queue an email using wp_mail (uses WP Mail SMTP if configured)
- * @param string $to
- * @param string $subject
- * @param string $message
- * @param string|array $headers
- * @param array $attachments
- * @return bool
- */
-function WP_SQL_workloads_queue_email($to, $subject, $message, $headers = '', $attachments = array()) {
-	// This will use WP Mail SMTP if it is active and configured
-	return wp_mail($to, $subject, $message, $headers, $attachments);
-}
-
 // Dashboard widget: next 3 scheduled workloads and last run
 add_action('wp_dashboard_setup', 'WP_SQL_workloads_add_dashboard_widget');
+/**
+ * Register dashboard widget showing next scheduled workloads and last run.
+ */
 function WP_SQL_workloads_add_dashboard_widget() {
 	if (!current_user_can('manage_options')) return;
 	wp_add_dashboard_widget(
@@ -449,6 +82,9 @@ function WP_SQL_workloads_add_dashboard_widget() {
 	);
 }
 
+/**
+ * Dashboard widget rendering logic. Shows upcoming schedules and most recent run.
+ */
 function WP_SQL_workloads_dashboard_widget_display() {
 	$workloads = get_option('WP_SQL_workloads_workloads', array());
 	$upcoming = array();
@@ -507,6 +143,11 @@ function WP_SQL_workloads_dashboard_widget_display() {
 	echo '</div></div>';
 }
 
+// -- Admin menu --
+/**
+ * Add the top-level admin menu and associated subpages.
+ * Requires capability 'manage_options' (admin only by default).
+ */
 function WP_SQL_workloads_add_admin_menu() {
        add_menu_page(
 	       'WP SQL Workloads', // Page title
@@ -537,8 +178,18 @@ function WP_SQL_workloads_add_admin_menu() {
        );
 }
 
+// Register the admin menu so the plugin appears under WordPress admin
+add_action('admin_menu', 'WP_SQL_workloads_add_admin_menu');
+
+// -- END --
+
+/**
+ * Callback to render the "All Workloads" admin page. Attempts to include
+ * `all-workloads.php` from the plugin directory and shows an error notice
+ * if the file is missing.
+ */
 function WP_SQL_workloads_all_workloads_page() {
-       $file = dirname(__FILE__) . '/all-workloads.php';
+	$file = dirname(__FILE__) . '/all-workloads.php';
        if (file_exists($file)) {
 	       include $file;
        } else {
@@ -546,8 +197,12 @@ function WP_SQL_workloads_all_workloads_page() {
        }
 }
 
+/**
+ * Callback to render the "Add Workload" admin page. Includes the
+ * `create-workload.php` UI file if present.
+ */
 function WP_SQL_workloads_add_workload_page() {
-       $file = dirname(__FILE__) . '/create-workload.php';
+	$file = dirname(__FILE__) . '/create-workload.php';
        if (file_exists($file)) {
 	       include $file;
        } else {
@@ -555,79 +210,25 @@ function WP_SQL_workloads_add_workload_page() {
        }
 }
 
-function WP_SQL_workloads_settings_init() {
-		add_settings_field(
-			'WP_SQL_workloads_trigger_days',
-			__('Trigger Condition (days before expiration)', 'WP_SQL_workloads'),
-			'WP_SQL_workloads_trigger_days_render',
-			'WP_SQL_workloads',
-			'WP_SQL_workloads_section'
-		);
-		register_setting('WP_SQL_workloads', 'WP_SQL_workloads_trigger_days');
-	function WP_SQL_workloads_trigger_days_render() {
-		$value = get_option('WP_SQL_workloads_trigger_days', '7');
-		echo "<input type='number' name='WP_SQL_workloads_trigger_days' value='" . esc_attr($value) . "' min='1' max='365' style='width:60px;' /> ";
-		echo '<small>Send email this many days before expiration.</small>';
-	}
-	register_setting('WP_SQL_workloads', 'WP_SQL_workloads_table_name');
-	register_setting('WP_SQL_workloads', 'WP_SQL_workloads_clock_time');
 
-	add_settings_section(
-		'WP_SQL_workloads_section',
-		__('Configure Table', 'WP_SQL_workloads'),
-		null,
-		'WP_SQL_workloads'
-	);
-
-	add_settings_field(
-		'WP_SQL_workloads_table_name',
-		__('Table Name', 'WP_SQL_workloads'),
-		'WP_SQL_workloads_table_name_render',
-		'WP_SQL_workloads',
-		'WP_SQL_workloads_section'
-	);
-
-	add_settings_field(
-		'WP_SQL_workloads_clock_time',
-		__('Execution Time (24h)', 'WP_SQL_workloads'),
-		'WP_SQL_workloads_clock_time_render',
-		'WP_SQL_workloads',
-		'WP_SQL_workloads_section'
-	);
-	add_settings_field(
-		'WP_SQL_workloads_email_template',
-		__('Expiration Email Template', 'WP_SQL_workloads'),
-		'WP_SQL_workloads_email_template_render',
-		'WP_SQL_workloads',
-		'WP_SQL_workloads_section'
-	);
-	register_setting('WP_SQL_workloads', 'WP_SQL_workloads_email_template');
-	function WP_SQL_workloads_email_template_render() {
-		$value = get_option('WP_SQL_workloads_email_template', 'Your item with ID {ID} will expire on {EXPIRY_DATE}.');
-		echo "<textarea name='WP_SQL_workloads_email_template' rows='4' cols='50'>" . esc_textarea($value) . "</textarea>";
-		echo '<br><small>Use {ID} and {EXPIRY_DATE} as placeholders.</small>';
-	}
-}
-
-function WP_SQL_workloads_clock_time_render() {
-	$value = get_option('WP_SQL_workloads_clock_time', '00:00');
-	echo "<input type='time' name='WP_SQL_workloads_clock_time' value='" . esc_attr($value) . "' step='60' />";
-}
-
-function WP_SQL_workloads_table_name_render() {
-	$value = get_option('WP_SQL_workloads_table_name', 'wp_posts');
-	echo "<input type='text' name='WP_SQL_workloads_table_name' value='" . esc_attr($value) . "' />";
-}
-
+/**
+ * Top-level plugin options / test page. Handles form submissions for:
+ * - selecting table name
+ * - running SQL test queries (SELECT only)
+ * - sending a single test email
+ *
+ * Renders the tab navigation via `WP_SQL_workloads_render_tabs()` and outputs
+ * messages/results inline.
+ */
 function WP_SQL_workloads_options_page() {
-       global $wpdb;
+	global $wpdb;
        // Use posted value if available, otherwise use option
 	   if (isset($_POST['WP_SQL_workloads_table_name'])) {
 		   $table_name = esc_sql(sanitize_text_field($_POST['WP_SQL_workloads_table_name']));
 	   } else {
 		   $table_name = esc_sql(get_option('WP_SQL_workloads_table_name', 'wp_posts'));
 	   }
-       $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'settings';
+	$active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'test';
        $show_head = isset($_POST['show_head']);
        $show_test = isset($_POST['show_test']);
        $send_test = isset($_POST['send_test']);
@@ -660,68 +261,8 @@ function WP_SQL_workloads_options_page() {
        }
 
 	// Show prominent disclaimer about WP-Cron limitations
-	echo '<div class="notice notice-warning is-dismissible" style="margin:12px 0;"><p><strong>TRUE CRON NOT ACTIVE DUE WP-CRON FUNCTIONALITY, IMPLEMENT TRUE CRON ON LIVE.</strong></p></div>';
-
+	echo '<div class="notice notice-warning is-dismissible" style="margin:12px 0;"><p><strong> To activate true cron, use outside trigger, like cPanel CronJob (curl -s https://growthrocket.online/wp-cron.php?doing_wp_cron >/dev/null 2>&1)</strong></p></div>';
+TRUE
 	// Unified tab menu
 	WP_SQL_workloads_render_tabs($active_tab);
-
-       if ($active_tab === 'settings') {
-	       ?>
-	       <form action="options.php" method="post">
-		       <h2>WP SQL Workloads Settings</h2>
-		       <?php
-		       settings_fields('WP_SQL_workloads');
-		       do_settings_sections('WP_SQL_workloads');
-		       submit_button();
-		       ?>
-	       </form>
-	       <form action="" method="post" style="margin-top:1em;">
-		       <button type="submit" name="show_head" class="button button-secondary">Show Top 5 Rows</button>
-	       </form>
-	       <?php
-	       if ($show_head) {
-		       // Fetch top 5 rows from the selected table
-			       // Debug: show which DB and host are in use
-			       echo '<div style="margin:0.5em 0;padding:0.5em;background:#f7f7f7;border:1px solid #eee;">';
-			       echo '<strong>DB_NAME:</strong> ' . esc_html(defined('DB_NAME') ? DB_NAME : 'constant DB_NAME not set') . '<br/>';
-			       echo '<strong>DB_HOST:</strong> ' . esc_html(defined('DB_HOST') ? DB_HOST : 'constant DB_HOST not set') . '<br/>';
-			       // Check table existence
-			       $table_check = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table_name));
-			       if ($table_check) {
-				       echo '<strong>Table exists:</strong> Yes (' . esc_html($table_name) . ')<br/>';
-			       } else {
-				       echo '<strong>Table exists:</strong> No (' . esc_html($table_name) . ')<br/>';
-			       }
-			       echo '</div>';
-
-			       $results = $wpdb->get_results("SELECT * FROM `" . esc_sql($table_name) . "` LIMIT 5", ARRAY_A);
-			       if ($results) {
-				       echo '<h3>Top 5 Rows from ' . esc_html($table_name) . '</h3>';
-				       echo '<pre style="white-space:pre-wrap;">' . esc_html(print_r($results, true)) . '</pre>';
-			       } else {
-				       echo '<div style="color:red;">No results found.</div>';
-			       }
-	       }
-       } elseif ($active_tab === 'test') {
-	       echo '<h2>Test</h2>';
-	       echo $test_result;
-	       // Test Email UI
-	       ?>
-	       <form action="?page=WP_SQL_workloads&tab=test" method="post" style="margin-bottom:1em;">
-		       <input type="email" name="test_email" placeholder="Enter email address" required />
-		       <button type="submit" name="send_test" class="button button-primary">Send Test Email</button>
-	       </form>
-	       <?php if ($show_test) { ?>
-	       <?php }
-
-	       // Test SQL UI
-	       ?>
-	       <form action="?page=WP_SQL_workloads&tab=test" method="post" style="margin-top:2em;">
-		       <input type="text" name="sql_query" placeholder="Enter SELECT query" style="width:300px;" />
-		       <button type="submit" name="run_sql" class="button button-primary">Run SQL</button>
-	       </form>
-	       <?php if ($show_sql) { ?>
-		       <?php echo $sql_result; ?>
-	       <?php }
-       }
 }
