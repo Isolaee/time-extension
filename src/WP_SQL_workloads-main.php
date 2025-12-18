@@ -6,27 +6,7 @@ Version: 1.0
 Author: Eero Isola
 */
 
-// render tab navigation
-if (!function_exists('WP_SQL_workloads_render_tabs')) {
-	// In case this file is loaded directly, define the function (should always exist)
-	/**
-	 * Render the admin page tab navigation.
-	 *
-	 * @param string $active_tab Currently active tab key ('test', 'add_workload', 'all_workloads').
-	 */
-	function WP_SQL_workloads_render_tabs($active_tab) {
-		echo '<style>
-		.timeext-tabs { border-bottom: 1px solid #ddd; margin-bottom: 20px; }
-		.timeext-tab { display: inline-block; margin-right: 30px; padding: 8px 0; font-size: 16px; color: #444; text-decoration: none; border-bottom: 2px solid transparent; }
-		.timeext-tab.active { color: #d35400; border-bottom: 2px solid #d35400; font-weight: 600; }
-		</style>';
-		echo '<nav class="timeext-tabs">';
-		echo '<a href="?page=WP_SQL_workloads&tab=info" class="timeext-tab' . ($active_tab === 'info' ? ' active' : '') . '">Test</a>';
-		echo '<a href="?page=WP_SQL_workloads_add_workload" class="timeext-tab' . ($active_tab === 'add_workload' ? ' active' : '') . '">Add Workload</a>';
-		echo '<a href="?page=WP_SQL_workloads_all_workloads" class="timeext-tab' . ($active_tab === 'all_workloads' ? ' active' : '') . '">All Workloads</a>';
-		echo '</nav>';
-	}
-}
+// Tab rendering moved to helpers.php to share across admin pages.
 
 
 // Load shared helpers (next-scheduled helper, runner, queue_email)
@@ -219,7 +199,12 @@ function WP_SQL_workloads_add_workload_page() {
  */
 function WP_SQL_workloads_info_page() {
 
-    echo '<div class="wrap" style="margin-top:12px;">';
+	// Render shared tab navigation (implemented in helpers.php)
+	if (function_exists('WP_SQL_workloads_render_tabs')) {
+		WP_SQL_workloads_render_tabs('info');
+	}
+
+	echo '<div class="wrap" style="margin-top:12px;">';
     echo '<h1>WP SQL Workloads — Info</h1>';
 
     echo '<section style="margin-top:18px;padding:12px;background:#fff;border:1px solid #eee;">';

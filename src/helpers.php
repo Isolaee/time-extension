@@ -328,3 +328,24 @@ if (!function_exists('WP_SQL_workloads_run_workload_with_output')) {
         return ['debug' => $output];
     }
 }
+
+
+if (!function_exists('WP_SQL_workloads_render_tabs')) {
+    /**
+     * Render the admin page tab navigation.
+     *
+     * @param string $active_tab Currently active tab key ('info', 'add_workload', 'all_workloads').
+     */
+    function WP_SQL_workloads_render_tabs($active_tab) {
+        echo '<style>
+        .timeext-tabs { border-bottom: 1px solid #ddd; margin-bottom: 20px; }
+        .timeext-tab { display: inline-block; margin-right: 30px; padding: 8px 0; font-size: 16px; color: #444; text-decoration: none; border-bottom: 2px solid transparent; }
+        .timeext-tab.active { color: #d35400; border-bottom: 2px solid #d35400; font-weight: 600; }
+        </style>';
+        echo '<nav class="timeext-tabs">';
+        echo '<a href="?page=WP_SQL_workloads&tab=info" class="timeext-tab' . ($active_tab === 'info' ? ' active' : '') . '">Info</a>';
+        echo '<a href="?page=WP_SQL_workloads_add_workload" class="timeext-tab' . ($active_tab === 'add_workload' ? ' active' : '') . '">Add Workload</a>';
+        echo '<a href="?page=WP_SQL_workloads_all_workloads" class="timeext-tab' . ($active_tab === 'all_workloads' ? ' active' : '') . '">All Workloads</a>';
+        echo '</nav>';
+    }
+}

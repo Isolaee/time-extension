@@ -1,7 +1,25 @@
 <?php
+/**
+ * Add/Edit Workload admin page.
+ *
+ * Responsibilities:
+ * - Render the Add/Edit Workload form
+ * - Validate and persist submitted workload data to the `WP_SQL_workloads_workloads` option
+ * - Schedule or reschedule the per-workload daily cron event
+ *
+ * Notes:
+ * - Only SELECT queries are allowed for safety (validated here).
+ * - This file expects `helpers.php` to be present (defines `WP_SQL_workloads_next_scheduled_time`).
+ */
+
 // Load shared helpers (defines WP_SQL_workloads_next_scheduled_time, runner, queue_email)
 require_once dirname(__FILE__) . '/helpers.php';
-// Handle form submission FIRST, before any output
+
+/*
+ * Handle form submission FIRST, before any output.
+ * Sanitizes fields, validates SQL (must start with SELECT), and either updates
+ * an existing workload or creates a new one. Redirects on success to avoid POST resubmission.
+ */
 if (
 	$_SERVER['REQUEST_METHOD'] === 'POST' &&
 	isset(
@@ -12,7 +30,6 @@ if (
 		$_POST['workload_cf7_form_id']
 	)
 ) {
-	// Next-scheduled helper defined in the main plugin file.
 	$name = sanitize_text_field($_POST['workload_name']);
 	$time = sanitize_text_field($_POST['workload_time']);
 	$sql_query = trim(wp_unslash($_POST['workload_sql_query']));
@@ -21,15 +38,14 @@ if (
 	$cf7_form_id = sanitize_text_field($_POST['workload_cf7_form_id']);
 	$edit_id_post = isset($_POST['edit_id']) ? sanitize_text_field($_POST['edit_id']) : false;
 
-	// Only allow SELECT queries
+	// Only allow SELECT queries for safety
 	if (stripos($sql_query, 'select') !== 0) {
-		// We'll show the error after output starts, so just set a flag
 		$_GET['form_error'] = 'Only SELECT queries are allowed in SQL Query.';
 	} else {
 		$workloads = get_option('WP_SQL_workloads_workloads', []);
 		if (!is_array($workloads)) $workloads = [];
 		if ($edit_id_post && isset($workloads[$edit_id_post])) {
-			// Edit existing workload
+			// Edit existing workload: preserve id, update settings, and reschedule if needed
 			$id = $edit_id_post;
 			$old_time = $workloads[$id]['time'];
 			$workloads[$id] = [
@@ -51,7 +67,7 @@ if (
 			wp_redirect(add_query_arg(['page'=>'WP_SQL_workloads_add_workload','edit'=>$id,'success'=>'updated'], menu_page_url('WP_SQL_workloads_add_workload', false)));
 			exit;
 		} else {
-			// Add new workload
+			// Add new workload: generate unique id, store and schedule
 			$id = uniqid('workload_', true);
 			$workloads[$id] = [
 				'id' => $id,
@@ -63,7 +79,6 @@ if (
 				'cf7_form_id' => $cf7_form_id,
 			];
 			update_option('WP_SQL_workloads_workloads', $workloads);
-			// Schedule cron event (daily at specified time)
 			$timestamp = WP_SQL_workloads_next_scheduled_time($time);
 			if (!wp_next_scheduled('WP_SQL_workloads_run_workload', [$id])) {
 				wp_schedule_event($timestamp, 'daily', 'WP_SQL_workloads_run_workload', [$id]);
@@ -73,26 +88,6 @@ if (
 		}
 	}
 }
-
-// ...existing code for rendering tabs, form, etc. (no changes below this line except for error display)...
-
-if (!function_exists('WP_SQL_workloads_render_tabs')) {
-	// In case this file is loaded directly, define the function (should always exist)
-	function WP_SQL_workloads_render_tabs($active_tab) {
-		echo '<style>
-		.timeext-tabs { border-bottom: 1px solid #ddd; margin-bottom: 20px; }
-		.timeext-tab { display: inline-block; margin-right: 30px; padding: 8px 0; font-size: 16px; color: #444; text-decoration: none; border-bottom: 2px solid transparent; }
-		.timeext-tab.active { color: #d35400; border-bottom: 2px solid #d35400; font-weight: 600; }
-		</style>';
-		echo '<nav class="timeext-tabs">';
-		echo '<a href="?page=WP_SQL_workloads&tab=info" class="timeext-tab' . ($active_tab === 'info' ? ' active' : '') . '">Test</a>';
-		echo '<a href="?page=WP_SQL_workloads_add_workload" class="timeext-tab' . ($active_tab === 'add_workload' ? ' active' : '') . '">Add Workload</a>';
-		echo '<a href="?page=WP_SQL_workloads_all_workloads" class="timeext-tab' . ($active_tab === 'all_workloads' ? ' active' : '') . '">All Workloads</a>';
-		echo '</nav>';
-	}
-}
-
-
 
 $is_edit = false;
 $edit_id = isset($_GET['edit']) ? sanitize_text_field($_GET['edit']) : false;
