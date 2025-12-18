@@ -11,6 +11,10 @@ Author: Eero Isola
 
 // Load shared helpers (next-scheduled helper, runner, queue_email)
 require_once dirname(__FILE__) . '/helpers.php';
+// Load page implementations so they can register their page callbacks.
+require_once dirname(__FILE__) . '/all-workloads.php';
+require_once dirname(__FILE__) . '/create-workload.php';
+
 // Ensure the runner is registered on the WP hook so both cron and admin can invoke it.
 add_action('WP_SQL_workloads_run_workload', 'WP_SQL_workloads_run_workload_with_output', 10, 1);
 
@@ -163,32 +167,8 @@ add_action('admin_menu', 'WP_SQL_workloads_add_admin_menu');
 
 // -- END --
 
-/**
- * Callback to render the "All Workloads" admin page. Attempts to include
- * `all-workloads.php` from the plugin directory and shows an error notice
- * if the file is missing.
- */
-function WP_SQL_workloads_all_workloads_page() {
-	$file = dirname(__FILE__) . '/all-workloads.php';
-       if (file_exists($file)) {
-	       include $file;
-       } else {
-	       echo '<div class="notice notice-error"><p>All Workloads page not found.</p></div>';
-       }
-}
-
-/**
- * Callback to render the "Add Workload" admin page. Includes the
- * `create-workload.php` UI file if present.
- */
-function WP_SQL_workloads_add_workload_page() {
-	$file = dirname(__FILE__) . '/create-workload.php';
-       if (file_exists($file)) {
-	       include $file;
-       } else {
-	       echo '<div class="notice notice-error"><p>Workload creation page not found.</p></div>';
-       }
-}
+/* Page callbacks for admin pages are defined inside their respective
+   files (`all-workloads.php`, `create-workload.php`) which are required above. */
 
 
 /**
