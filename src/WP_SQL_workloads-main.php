@@ -218,6 +218,26 @@ function WP_SQL_workloads_add_workload_page() {
  * messages/results inline.
  */
 function WP_SQL_workloads_info_page() {
-	// Show prominent disclaimer about WP-Cron limitations
-	echo '<div class="notice notice-warning is-dismissible" style="margin:12px 0;"><p><strong> To activate true cron, use outside trigger, like cPanel CronJob (curl -s https://growthrocket.online/wp-cron.php?doing_wp_cron >/dev/null 2>&1)</strong></p></div>';
+
+    echo '<div class="wrap" style="margin-top:12px;">';
+    echo '<h1>WP SQL Workloads — Info</h1>';
+
+    echo '<section style="margin-top:18px;padding:12px;background:#fff;border:1px solid #eee;">';
+    echo '<h2 style="margin:0 0 8px 0;">wp-cron</h2>';
+	echo '<p style="margin:0;">WP-Cron is pseudo-cron that only runs when site visitors access the site. This means scheduled tasks may not run on time if there is low traffic.</p>';
+    echo '<p style="margin:0;">To activate true cron, use outside trigger, like cPanel CronJob (curl -s https://growthrocket.online/wp-cron.php?doing_wp_cron >/dev/null 2>&1)';
+    echo '</section>';
+
+    echo '<section style="margin-top:12px;padding:12px;background:#fff;border:1px solid #eee;">';
+    echo '<h2 style="margin:0 0 8px 0;">Emails</h2>';
+    echo '<p style="margin:0;color:#666;">Emails are using default email settings. aka wp_mail()</p>';
+	echo '<p style="margin:0;color:#666;">If you want to use a different email service, consider installing an SMTP plugin or configuring your server accordingly. but it *MUST* replace wp_mail() to work correctly.</p>';
+    echo '</section>';
+
+	echo '<section style="margin-top:12px;padding:12px;background:#fff;border:1px solid #eee;">';
+    echo '<h2 style="margin:0 0 8px 0;">Emails content</h2>';
+    echo '<p style="margin:0;color:#666;">This plugin is designed to use Contact Form 7 (CF7) template emails. Install CF7 plugin to use this feature.</p>';
+    echo '</section>';
+
+    echo '</div>';
 }
